@@ -1,3 +1,5 @@
+# part of codes are modified from https://github.com/JunjieHu/cs769-assignments/tree/main/assignment2
+
 import random
 import numpy as np
 import pandas as pd
