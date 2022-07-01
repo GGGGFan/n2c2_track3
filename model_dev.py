@@ -1,5 +1,3 @@
-# part of codes are modified from https://github.com/JunjieHu/cs769-assignments/tree/main/assignment2
-
 import random
 import numpy as np
 import pandas as pd
@@ -29,10 +27,11 @@ def get_args():
     parser.add_argument("--path_dev_add", type=str, default="/home/jifangao/N2C2_track3/added_fts_dev.npy")
     parser.add_argument("--path_test_add", type=str, default="")
     parser.add_argument("--path_model", type=str, default="model/")
-    parser.add_argument("--pretrained_model", type=str, default="emilyalsentzer/Bio_ClinicalBERT")
+    parser.add_argument("--pretrained_model", type=str, default="/home/jifangao/anaconda3/lib/python3.7/site-packages/transformers/models/PubmedBERTbase-MimicBig-EntityBERT")
+    parser.add_argument("--local_model", type=bool, default=False)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--model_max_length", type=int, default=512)
-    parser.add_argument("--learning_rate", type=float, default=1e-5)
+    parser.add_argument("--learning_rate", type=float, default=2e-5)
     parser.add_argument("--epoch", type=int, default=3)
     parser.add_argument("--seed", type=int, default=41)
     args = parser.parse_args()
@@ -86,18 +85,15 @@ class N2C2_track3_dataset(Dataset):
                 self.df_test = pd.read_csv(args.path_dev_df)
                 self.added_fts_te = np.load(args.path_dev_add)
         self.tokenizer = AutoTokenizer.from_pretrained(args.pretrained_model,
-                                               model_max_length=args.model_max_length)
+                                                       model_max_length=args.model_max_length,
+                                                       local_files_only=args.local_model)
         self.dic_label_index = {'Direct': 0, 'Indirect': 1, 'Neither': 2, 'Not Relevant': 3}
         self.train_lst = None
         self.dev_lst = None
         self.test_lst = None
 
-
     def __len__(self):
         return self.dataframe.shape[0]
-
-    def __getitem__(self, idx):
-        return self.dataframe.iloc[idx]
 
     def split_train_data(self, args):
         # use 80% hadmins as training data and rest as dev data
@@ -151,7 +147,7 @@ class Transformer_base(nn.Module):
     """
     def __init__(self, args):
         super(Transformer_base, self).__init__()
-        self.tfm = AutoModel.from_pretrained(args.pretrained_model, output_hidden_states=True)
+        self.tfm = AutoModel.from_pretrained(args.pretrained_model, output_hidden_states=True, local_files_only=args.local_model)
         self.linear_1 = nn.Linear(768+3, 4)
         self.act_1 = nn.ReLU()
         self.drop_1 = nn.Dropout(0.1)
@@ -197,11 +193,11 @@ def model_eval(lst_data, model, dataiter):
         token_type_ids = torch.LongTensor(token_type_ids).to(device)
         added_fts = torch.LongTensor(added_fts).to(device)
         # predict
-        y_pred = list(torch.argmax(model(X, mask_attention, token_type_ids, added_fts), dim=1).cpu().detach().numpy())[:len(labels)]
+        y_pred = list(torch.argmax(model(X, mask_attention, token_type_ids, added_fts), dim=1).cpu().detach().numpy())
         # append to list
         list_yTrue.extend(labels)
         list_yPred.extend(y_pred)
-    return f1_score(list_yTrue, list_yPred, average='micro')
+    return f1_score(list_yTrue, list_yPred, average='micro'), list_yTrue, list_yPred
 
 if __name__ == "__main__":
     args = get_args()
@@ -250,10 +246,10 @@ if __name__ == "__main__":
         # loss
         train_loss = train_loss / num_batches
         # print model performance in this epoch
-        train_f1 = model_eval(dataset.train_lst, model, data_iter)
+        train_f1, _, _ = model_eval(dataset.train_lst, model, data_iter)
         print(f"Epoch {ep}\nTraining loss: {train_loss}\tTraining F1: {train_f1}")
         if not args.mode_train:
-            dev_f1 = model_eval(dataset.dev_lst, model, data_iter)
+            dev_f1, _, _ = model_eval(dataset.dev_lst, model, data_iter)
             print(f"Dev F1: {dev_f1}")
             if dev_f1 > best_dev:
                 torch.save(model.state_dict(), model_path)
@@ -261,4 +257,4 @@ if __name__ == "__main__":
         torch.save(model.state_dict(), model_path)
 
     # performance on test set
-    print(f"\nTest F1: {model_eval(dataset.test_lst, model, data_iter)}")
+    print(f"\nTest F1: {model_eval(dataset.test_lst, model, data_iter)[0]}\n\n")
