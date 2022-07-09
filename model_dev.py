@@ -27,12 +27,13 @@ def get_args():
     parser.add_argument("--path_dev_add", type=str, default="/home/jifangao/N2C2_track3/added_fts_dev.npy")
     parser.add_argument("--path_test_add", type=str, default="")
     parser.add_argument("--path_model", type=str, default="model/")
-    parser.add_argument("--pretrained_model", type=str, default="/home/jifangao/anaconda3/lib/python3.7/site-packages/transformers/models/PubmedBERTbase-MimicBig-EntityBERT")
-    parser.add_argument("--local_model", type=bool, default=False)
+    parser.add_argument("--pretrained_model", type=str, default="/home/jifangao/N2C2_track3/downloaded_models/PubmedBERTbase-MimicBig-EntityBERT")
+    parser.add_argument("--local_model", type=bool, default=True)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--model_max_length", type=int, default=512)
-    parser.add_argument("--learning_rate", type=float, default=2e-5)
-    parser.add_argument("--epoch", type=int, default=3)
+    parser.add_argument("--learning_rate", type=float, default=1e-5)
+    parser.add_argument("--dropout", type=float, default=0.25)
+    parser.add_argument("--epoch", type=int, default=2)
     parser.add_argument("--seed", type=int, default=41)
     args = parser.parse_args()
     print(f"args: {vars(args)}")
@@ -88,12 +89,25 @@ class N2C2_track3_dataset(Dataset):
                                                        model_max_length=args.model_max_length,
                                                        local_files_only=args.local_model)
         self.dic_label_index = {'Direct': 0, 'Indirect': 1, 'Neither': 2, 'Not Relevant': 3}
+        self.idx_start_train = self.collect_start_ids(self.df_train)
+        self.idx_start_test = self.collect_start_ids(self.df_test)
+        if args.mode_train != True:
+            self.idx_start_dev = self.collect_start_ids(self.df_dev)
         self.train_lst = None
         self.dev_lst = None
         self.test_lst = None
 
+
     def __len__(self):
-        return self.dataframe.shape[0]
+        return self.df_train.shape[0], self.df_dev.shape[0], self.df_test.shape[0]
+
+    def collect_start_ids(self, df):
+        # return row ids of samples that are the first section of corresponding notes
+        df_copy = df.copy()
+        df = df.copy()
+        df['rank_total'] = range(df.shape[0])
+        df['rank'] = df.groupby('HADM ID')['rank_total'].rank(method='dense').astype(int)
+        return list(df[df['rank']==1].index)
 
     def split_train_data(self, args):
         # use 80% hadmins as training data and rest as dev data
@@ -114,11 +128,11 @@ class N2C2_track3_dataset(Dataset):
                 encoded_dict = self.tokenizer(row['Assessment'], row['Plan Subsection'], truncation=True)
                 # hand-crafted features
                 if i == 0:
-                    encoded_dict['added_features'] = list(self.added_fts_tr[rid])
+                    encoded_dict['added_features'] = [1 if rid in self.idx_start_train else 0] + list(self.added_fts_tr[rid])
                 if i == 1:
-                    encoded_dict['added_features'] = list(self.added_fts_te[rid])
+                    encoded_dict['added_features'] = [1 if rid in self.idx_start_test else 0] + list(self.added_fts_te[rid])
                 if i == 2:
-                    encoded_dict['added_features'] = list(self.added_fts_dv[rid])
+                    encoded_dict['added_features'] = [1 if rid in self.idx_start_dev else 0] + list(self.added_fts_dv[rid])
                 # padding
                 encoded_dict['input_ids'] += [0]*(args.model_max_length - len(encoded_dict['input_ids']))
                 encoded_dict['attention_mask'] += [0]*(args.model_max_length - len(encoded_dict['attention_mask']))
@@ -148,9 +162,9 @@ class Transformer_base(nn.Module):
     def __init__(self, args):
         super(Transformer_base, self).__init__()
         self.tfm = AutoModel.from_pretrained(args.pretrained_model, output_hidden_states=True, local_files_only=args.local_model)
-        self.linear_1 = nn.Linear(768+3, 4)
+        self.linear_1 = nn.Linear(768+1+3, 4)
         self.act_1 = nn.ReLU()
-        self.drop_1 = nn.Dropout(0.1)
+        self.drop_1 = nn.Dropout(args.dropout)
         self.softmax = nn.LogSoftmax(dim=1)
 
     def forward(self, x, mask_attention, token_type_ids, added_fts):
@@ -191,7 +205,7 @@ def model_eval(lst_data, model, dataiter):
         X = torch.LongTensor(sents).to(device)
         mask_attention = torch.LongTensor(mask_attention).to(device)
         token_type_ids = torch.LongTensor(token_type_ids).to(device)
-        added_fts = torch.LongTensor(added_fts).to(device)
+        added_fts = torch.FloatTensor(added_fts).to(device)
         # predict
         y_pred = list(torch.argmax(model(X, mask_attention, token_type_ids, added_fts), dim=1).cpu().detach().numpy())
         # append to list
